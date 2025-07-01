@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cave Explorer</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+        import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
+        import { RGBELoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/RGBELoader.js';
+
+        // Post-processing
+        import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js';
+        import { SSAOPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/SSAOPass.js';
+        import { UnrealBloomPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js';
+        // import { OutputPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/OutputPass.js';
+
+
+        let scene, camera, renderer, headLight, composer;
+        let caveModel;
+
+        // Performance Toggles / Settings
+        const enableSSAO = true; // Set to false to disable SSAO for performance testing
+
+        // First-person controls variables
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        const movementSpeed = 5.0;
+        const lookSpeed = 2.0;
+
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        let euler = new THREE.Euler(0, 0, 0, 'YXZ');
+
+        const playAreaMin = new THREE.Vector3(-45, 1.5, -45);
+        const playAreaMax = new THREE.Vector3(45, 5, 45);
+        const playerHeight = 1.5;
+
+        // Declare groundHelper and cubeHelper globally to be accessed in loadCaveModel and init
+        let groundHelper, cubeHelper;
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.y = playerHeight;
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.useLegacyLights = false;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // Setup Post-processing
+            setupPostProcessing();
+
+            document.addEventListener('click', () => { document.body.requestPointerLock(); });
+            document.addEventListener('pointerlockchange', lockChangeAlert, false);
+
+            function lockChangeAlert() {
+                if (document.pointerLockElement === document.body) {
+                    document.addEventListener("mousemove", onMouseMove, false);
+                } else {
+                    document.removeEventListener("mousemove", onMouseMove, false);
+                }
+            }
+
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+
+            // Setup Advanced Lighting
+            setupLighting(); // Call to new lighting function
+
+            // Ground Helper
+            groundHelper = new THREE.Mesh(
+                new THREE.PlaneGeometry(100, 100),
+                new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 1.0, metalness: 0.0 })
+            );
+            groundHelper.rotation.x = -Math.PI / 2;
+            groundHelper.receiveShadow = true;
+            scene.add(groundHelper);
+
+            // Cube Helper
+            cubeHelper = new THREE.Mesh(
+                new THREE.BoxGeometry(1, 1, 1),
+                new THREE.MeshStandardMaterial({ color: 0x00ff00, roughness: 0.5, metalness: 0.1 })
+            );
+            cubeHelper.position.set(0, 0.5 + playerHeight - 1.5, 0); // Adjust cube Y based on playerHeight concept
+            cubeHelper.castShadow = true;
+            scene.add(cubeHelper);
+
+            loadCaveModel();
+
+            window.addEventListener('resize', onWindowResize, false);
+            animate();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight); // Update composer size
+        }
+
+        function onMouseMove(event) {
+            if (document.pointerLockElement === document.body) {
+                euler.setFromQuaternion(camera.quaternion);
+                euler.y -= event.movementX * 0.001 * lookSpeed;
+                euler.x -= event.movementY * 0.001 * lookSpeed;
+                euler.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, euler.x));
+                camera.quaternion.setFromEuler(euler);
+            }
+        }
+
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = true; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+                case 'ArrowRight': case 'KeyD': moveRight = true; break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = false; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+                case 'ArrowRight': case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        let lastTime = performance.now();
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+            const delta = (time - lastTime) / 1000;
+
+            velocity.x -= velocity.x * 10.0 * delta;
+            velocity.z -= velocity.z * 10.0 * delta;
+
+            direction.z = Number(moveForward) - Number(moveBackward);
+            direction.x = Number(moveRight) - Number(moveLeft); // Corrected: moveRight is positive X, moveLeft is negative X for direction vector
+            direction.normalize();
+
+            if (moveForward || moveBackward) velocity.z -= direction.z * movementSpeed * 10.0 * delta;
+            if (moveLeft || moveRight) velocity.x -= direction.x * movementSpeed * 10.0 * delta; // This should be direction.x
+
+            camera.translateX(velocity.x * delta);
+            camera.translateZ(velocity.z * delta);
+
+            camera.position.y = Math.max(playerHeight, Math.min(playAreaMax.y, camera.position.y));
+            camera.position.x = Math.max(playAreaMin.x, Math.min(playAreaMax.x, camera.position.x));
+            camera.position.z = Math.max(playAreaMin.z, Math.min(playAreaMax.z, camera.position.z));
+
+            lastTime = time;
+            render();
+        }
+
+        function render() {
+            // renderer.render(scene, camera); // Old rendering path
+            composer.render(); // New rendering path using EffectComposer
+        }
+
+        function loadCaveModel() {
+            const loader = new GLTFLoader();
+            const caveModelPath = 'assets/cave.glb';
+            loader.load(caveModelPath, (gltf) => {
+                caveModel = gltf.scene;
+                caveModel.traverse((child) => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                    }
+                });
+                scene.add(caveModel);
+                if (groundHelper) groundHelper.visible = false;
+                if (cubeHelper) cubeHelper.visible = false;
+            }, undefined, (error) => {
+                console.error('Error loading cave model (expected if assets/cave.glb does not exist):', error);
+                if (groundHelper) groundHelper.visible = true;
+                if (cubeHelper) cubeHelper.visible = true;
+            });
+        }
+
+        function setupLighting() {
+            // Scene Fog
+            // Choose a color that matches the general ambiance you want for the cave dust/mist
+            // A dark grey or a color tinted by your ambient lights often works well.
+            const fogColor = new THREE.Color(0x080808); // Very dark grey, almost black
+            scene.fog = new THREE.FogExp2(fogColor, 0.035); // color, density
+            // For THREE.Fog (linear): new THREE.Fog(fogColor, near_distance, far_distance);
+            // e.g., scene.fog = new THREE.Fog(fogColor, 10, 50);
+
+
+            // Ambient Light (very subtle fill)
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.1);
+            scene.add(ambientLight);
+
+            // Hemisphere Light (natural sky/ground ambient)
+            const hemisphereLight = new THREE.HemisphereLight(0x808080, 0x404040, 0.3); // Sky, Ground, Intensity
+            scene.add(hemisphereLight);
+
+            // Headlamp (SpotLight attached to camera)
+            headLight = new THREE.SpotLight(0xffffe0, 70.0, 35, Math.PI / 4.5, 0.15, 1.0);
+            // color, intensity, distance, angle, penumbra, decay
+            headLight.castShadow = true;
+            headLight.shadow.mapSize.width = 1024;
+            headLight.shadow.mapSize.height = 1024;
+            headLight.shadow.camera.near = 0.1;
+            headLight.shadow.camera.far = 35; // Match light's distance
+            headLight.shadow.bias = -0.005; // Adjust to prevent shadow acne
+            headLight.shadow.radius = 1.5;   // For PCFSoftShadowMap if used
+
+            // The light is parented to the camera. Its target also needs to be parented to the camera
+            // and positioned in front of it to direct the spotlight beam.
+            const headLightTarget = new THREE.Object3D();
+            camera.add(headLightTarget); // Add target to camera's hierarchy
+            headLightTarget.position.set(0, 0, -1); // Position target 1 unit in front of the camera
+
+            camera.add(headLight); // Add spotlight to camera's hierarchy
+            headLight.target = headLightTarget; // Make the spotlight aim at the target object
+
+            scene.add(camera); // Add camera (now with light and target as children) to the scene. This is important.
+
+            // HDRI Environment Map Loading
+            // User needs to place an HDR file (e.g., 'cave_environment.hdr') in 'assets/hdri/'
+            // Create 'assets/hdri/' directory.
+            new RGBELoader()
+                .setPath('assets/hdri/')
+                .load('cave_environment.hdr', function (texture) {
+                    texture.mapping = THREE.EquirectangularReflectionMapping;
+                    scene.environment = texture; // For PBR material reflections and ambient lighting
+                    // scene.background = texture; // Optional: set HDRI as visible background
+                    console.log("HDRI Environment map 'assets/hdri/cave_environment.hdr' loaded.");
+                }, undefined, function(error) {
+                    console.warn("HDRI Warning: Could not load 'assets/hdri/cave_environment.hdr'. Using fallback. Error:", error);
+                    if (!scene.background && !scene.environment) { // Only set fallback if nothing else has (e.g. user sets color)
+                         scene.background = new THREE.Color(0x101015); // Dark fallback background
+                    }
+                    // Ensure fog color is updated if background/environment changes, or vice-versa for consistency
+                    if (scene.fog && scene.environment) { // If HDRI loaded, try to match fog
+                        // This is a simplistic approach; ideally, fog color would be more intelligently derived
+                        // or set manually to complement the HDRI.
+                        // scene.fog.color.set(0x222233); // Example: a slightly blueish dark grey for some HDRIs
+                    }
+                });
+
+            // Placeholder for future Volumetric Light Beams (God Rays)
+            // True volumetric lighting is complex. Could involve:
+            // - Shader-based ray marching techniques.
+            // - Approximations using layered billboards with translucent textures.
+            // - Libraries like three-volumetric.js (if available and compatible).
+            // For now, the spotlight's cone and bloom effect provide some sense of a beam.
+        }
+
+        function setupPostProcessing() {
+            composer = new EffectComposer(renderer);
+
+            // 1. Render Pass - Renders the original scene
+            const renderPass = new RenderPass(scene, camera);
+            composer.addPass(renderPass);
+
+            // 2. SSAO Pass - Ambient Occlusion
+            // Note: SSAOPass can be performance-heavy. Parameters need careful tuning.
+            // It might require a depth texture, which RenderPass can provide.
+            const ssaoPass = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+            ssaoPass.kernelRadius = 0.6; // Slightly reduced radius
+            ssaoPass.minDistance = 0.002;
+            ssaoPass.maxDistance = 0.08; // Slightly reduced max distance
+            // ssaoPass.output = SSAOPass.OUTPUT.SSAO; // For debugging SSAO effect
+            if (enableSSAO) {
+                composer.addPass(ssaoPass);
+            }
+
+            // 3. Unreal Bloom Pass - Glow for bright areas
+            // Parameters: resolution, strength, radius, threshold
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.6, 0.4);
+            // bloomPass.threshold = 0.4; // Higher threshold means only brighter things bloom
+            // bloomPass.strength = 0.6;  // Bloom intensity
+            // bloomPass.radius = 0.6;    // Bloom spread
+            composer.addPass(bloomPass);
+
+            // Optional: OutputPass if tone mapping/color correction is needed after custom passes.
+            // Modern Three.js usually handles tone mapping set on the renderer correctly even with EffectComposer.
+            // This ensures that the renderer's toneMapping is applied if not handled by the last pass.
+            // const outputPass = new OutputPass();
+            // composer.addPass(outputPass);
+        }
+
+
+        init();
+    </script>
+</body>
+</html>
